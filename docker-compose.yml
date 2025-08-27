@@ -1,0 +1,99 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: vulnerability-scanner-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: vulnerability_scanner
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    networks:
+      - scanner-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: vulnerability-scanner-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - scanner-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Application
+  app:
+    build:
+      context: .
+      target: development
+    container_name: vulnerability-scanner-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: vulnerability_scanner
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CACHE_TTL: 3600
+      TRUFFLE_HOG_IMAGE: trufflesecurity/trufflehog:latest
+      API_PREFIX: api/v1
+      SWAGGER_ENABLED: true
+      LOG_LEVEL: debug
+    volumes:
+      - .:/usr/src/app
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /usr/src/app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - scanner-network
+    command: npm run start:dev
+
+  # TruffleHog (pulled as needed by the app)
+  trufflehog:
+    image: trufflesecurity/trufflehog:latest
+    container_name: vulnerability-scanner-trufflehog
+    networks:
+      - scanner-network
+    profiles:
+      - tools
+
+networks:
+  scanner-network:
+    driver: bridge
+    name: vulnerability-scanner-network
+
+volumes:
+  postgres_data:
+    name: vulnerability-scanner-postgres-data
+  redis_data:
+    name: vulnerability-scanner-redis-data

@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: vulnerability-scanner-postgres-prod
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: vulnerability_scanner
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-your-secure-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    networks:
+      - scanner-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: vulnerability-scanner-redis-prod
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-your-secure-redis-password}
+    volumes:
+      - redis_data:/data
+    networks:
+      - scanner-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-your-secure-redis-password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Application
+  app:
+    build:
+      context: .
+      target: production
+    container_name: vulnerability-scanner-app-prod
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-your-secure-password}
+      DB_NAME: vulnerability_scanner
+      DB_SYNCHRONIZE: false
+      DB_LOGGING: false
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-your-secure-redis-password}
+      CACHE_TTL: 3600
+      TRUFFLE_HOG_IMAGE: trufflesecurity/trufflehog:latest
+      API_PREFIX: api/v1
+      SWAGGER_ENABLED: false
+      LOG_LEVEL: info
+      THROTTLE_TTL: 60
+      THROTTLE_LIMIT: 10
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - scanner-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
+networks:
+  scanner-network:
+    driver: bridge
+    name: vulnerability-scanner-network-prod
+
+volumes:
+  postgres_data:
+    name: vulnerability-scanner-postgres-data-prod
+  redis_data:
+    name: vulnerability-scanner-redis-data-prod
